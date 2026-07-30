@@ -1,5 +1,8 @@
 # LLM Observability Lab
 
+[![CI](https://github.com/Zetesis-Labs/litellm-langfuse-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/Zetesis-Labs/litellm-langfuse-lab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Devcontainer con **LiteLLM** (gateway de modelos) y **Langfuse v4** (observabilidad) conectados
 entre sí, y una **FastAPI** que los consume para hacer consultas a modelos con trazabilidad del
 gasto real.
