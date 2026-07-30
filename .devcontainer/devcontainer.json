@@ -1,0 +1,30 @@
+{
+  "name": "LLM Observability Lab",
+  "dockerComposeFile": ["../docker-compose.yml", "compose.devcontainer.yml"],
+  "service": "api",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": false,
+  "forwardPorts": [8000, 4000, 3100],
+  "portsAttributes": {
+    "8000": { "label": "FastAPI", "onAutoForward": "notify" },
+    "4000": { "label": "LiteLLM proxy", "onAutoForward": "silent" },
+    "3100": { "label": "Langfuse", "onAutoForward": "silent" }
+  },
+  "postStartCommand": "uv sync",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "charliermarsh.ruff",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "tamasfe.even-better-toml",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "python.terminal.activateEnvironment": false
+      }
+    }
+  }
+}

@@ -1,0 +1,139 @@
+# LiteLLM proxy en EKS con Postgres en RDS.
+#
+# El chart trae dos subcharts de Bitnami (postgresql y redis), los dos
+# condicionales: con db.deployStandalone=false y redis.enabled=false no queda
+# nada de Bitnami en el cluster.
+#
+# Sustituye todo lo marcado con CAMBIAR.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/berriai/litellm-database # la variante -database trae Prisma
+  tag: v1.94.0
+  pullPolicy: IfNotPresent
+
+# El chart inyecta el master key como PROXY_MASTER_KEY leyéndolo de este Secret.
+# Si dejas masterkeySecretName vacío, el chart genera uno aleatorio en cada
+# render, que es justo lo que no quieres en GitOps.
+masterkeySecretName: litellm-secrets
+masterkeySecretKey: PROXY_MASTER_KEY
+
+# envFrom: aquí entran LITELLM_SALT_KEY (que el chart no modela), las API keys de
+# los proveedores y las credenciales de Langfuse si activas su callback.
+environmentSecrets:
+  - litellm-secrets
+
+envVars:
+  LITELLM_LOG: INFO
+  STORE_MODEL_IN_DB: "True"
+
+# --- Postgres: RDS ---
+# useExisting y deployStandalone son dos flags independientes: hay que poner las dos.
+# No hay clave db.sslmode; el TLS va en la query string de db.url.
+db:
+  useExisting: true
+  deployStandalone: false
+  endpoint: litellm.abcdefghijkl.eu-west-1.rds.amazonaws.com # CAMBIAR
+  database: litellm
+  url: postgresql://$(DATABASE_USERNAME):$(DATABASE_PASSWORD)@$(DATABASE_HOST)/$(DATABASE_NAME)?sslmode=require
+  secret:
+    name: litellm-db
+    usernameKey: username
+    passwordKey: password
+
+redis:
+  enabled: false
+
+# El Job de migración usa la misma imagen del proxy y corre `prisma_migration.py`.
+# Bajo ArgoCD se registra como hook PreSync (ya viene activado), así que migra
+# antes de que rueden los pods nuevos. El Deployment recibe
+# DISABLE_SCHEMA_UPDATE=true para que las réplicas no compitan migrando.
+migrationJob:
+  enabled: true
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 300
+  hooks:
+    argocd:
+      enabled: true
+    helm:
+      enabled: false
+
+service:
+  type: ClusterIP
+  port: 4000
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal # el proxy no debería ser público
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:123456789012:certificate/CAMBIAR
+    # /health/liveliness no toca la base de datos ni los proveedores.
+    # No apuntes el ALB a /health: ese hace una llamada real a CADA modelo.
+    alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
+    alb.ingress.kubernetes.io/healthcheck-port: "4000"
+    alb.ingress.kubernetes.io/success-codes: "200"
+  hosts:
+    - host: litellm.internal.example.com # CAMBIAR
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 2Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# Requiere el Prometheus Operator. El endpoint /metrics del proxy es de pago
+# (enterprise); sin licencia, el ServiceMonitor no recogerá nada útil.
+serviceMonitor:
+  enabled: false
+
+# Se renderiza como ConfigMap y se monta en /etc/litellm/config.yaml.
+# Mantenlo alineado con litellm/config.yaml del entorno local.
+proxyConfigMap:
+  create: true
+
+proxy_config:
+  model_list:
+    - model_name: claude-opus-5
+      litellm_params:
+        model: anthropic/claude-opus-5
+        api_key: os.environ/ANTHROPIC_API_KEY
+    - model_name: claude-sonnet-5
+      litellm_params:
+        model: anthropic/claude-sonnet-5
+        api_key: os.environ/ANTHROPIC_API_KEY
+    - model_name: claude-haiku-4-5
+      litellm_params:
+        model: anthropic/claude-haiku-4-5
+        api_key: os.environ/ANTHROPIC_API_KEY
+
+  general_settings:
+    master_key: os.environ/PROXY_MASTER_KEY
+    store_model_in_db: true
+
+  litellm_settings:
+    drop_params: true
+    num_retries: 2
+    default_key_generate_params:
+      max_budget: 50.0
+    # Sin callback a Langfuse: contra v4 la ingesta del SDK v2 se rechaza y la de
+    # OTLP llega sin coste. Las trazas las emite la aplicación con el SDK v4.
+    # Ver la sección "Decisiones" del README.

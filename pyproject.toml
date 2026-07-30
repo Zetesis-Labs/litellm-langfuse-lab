@@ -1,0 +1,22 @@
+[project]
+name = "llm-observability-lab"
+version = "0.1.0"
+description = "FastAPI sobre LiteLLM con trazabilidad de gasto en Langfuse"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "langfuse>=4.14",
+    "pydantic-settings>=2.7",
+    "uvicorn[standard]>=0.34",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]

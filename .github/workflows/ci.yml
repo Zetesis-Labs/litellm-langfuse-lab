@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  app:
+    name: Aplicación
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Importar la app
+        run: uv run python -c "from app.main import app; print(app.title)"
+      - name: Comprobar formato y lint
+        run: |
+          uv tool run ruff format --check .
+          uv tool run ruff check .
+
+  compose:
+    name: Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validar el compose
+        run: docker compose config --quiet
+      - name: Validar el compose del devcontainer
+        run: docker compose -f docker-compose.yml -f .devcontainer/compose.devcontainer.yml config --quiet
+
+  helm:
+    name: Manifiestos de Kubernetes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Renderizar Langfuse
+        run: |
+          helm repo add langfuse https://langfuse.github.io/langfuse-k8s
+          helm template langfuse langfuse/langfuse --version 1.5.41 \
+            -n llm-platform -f deploy/values/langfuse-aws.yaml > /tmp/langfuse.yaml
+      - name: Renderizar LiteLLM
+        run: |
+          curl -sL https://github.com/BerriAI/litellm/archive/refs/heads/main.tar.gz \
+            | tar -xz --strip-components=1 -C /tmp litellm-main/helm
+          helm template litellm /tmp/helm/litellm-helm \
+            -n llm-platform -f deploy/values/litellm-aws.yaml > /tmp/litellm.yaml
+      - name: Comprobar que no se cuela nada de Bitnami
+        run: |
+          for f in /tmp/langfuse.yaml /tmp/litellm.yaml; do
+            if grep -qi bitnami "$f"; then echo "::error file=$f::se ha colado una referencia a Bitnami"; exit 1; fi
+          done
+      - name: Comprobar que Langfuse va en v4
+        run: grep -q 'langfuse/langfuse:4' /tmp/langfuse.yaml
+      - name: Comprobar que no se filtran credenciales de S3
+        run: |
+          if grep -q 'LANGFUSE_S3_.*ACCESS_KEY' /tmp/langfuse.yaml; then
+            echo "::error::hay credenciales de S3 en los manifiestos; con IRSA no debe haber ninguna"; exit 1
+          fi

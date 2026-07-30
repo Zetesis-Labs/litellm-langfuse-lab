@@ -1,0 +1,208 @@
+# Langfuse en EKS con dependencias gestionadas de AWS.
+#
+# Los cuatro subcharts del chart oficial son de Bitnami (postgresql, clickhouse,
+# valkey, minio) y aquí van todos desactivados: los datos viven en RDS,
+# ElastiCache, un ClickHouse externo y S3.
+#
+# Sustituye todo lo marcado con CAMBIAR.
+
+langfuse:
+  # El chart 1.5.41 apunta por defecto a la serie 3. Forzamos v4 explícitamente
+  # (nunca la etiqueta `latest`, que sigue resolviendo a la 3).
+  web:
+    image:
+      repository: langfuse/langfuse
+      tag: "4"
+    replicas: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        memory: 4Gi
+    livenessProbe:
+      path: /api/public/health
+      initialDelaySeconds: 30
+    readinessProbe:
+      path: /api/public/ready
+      initialDelaySeconds: 30
+
+  worker:
+    image:
+      repository: langfuse/langfuse-worker
+      tag: "4"
+    replicas: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        memory: 4Gi
+
+  nextauth:
+    url: https://langfuse.example.com # CAMBIAR: URL pública, con https
+    secret:
+      secretKeyRef:
+        name: langfuse-secrets
+        key: nextauth-secret
+
+  salt:
+    secretKeyRef:
+      name: langfuse-secrets
+      key: salt
+
+  # Hex de 64 caracteres: openssl rand -hex 32
+  encryptionKey:
+    secretKeyRef:
+      name: langfuse-secrets
+      key: encryption-key
+
+  features:
+    telemetryEnabled: false
+    signUpDisabled: true
+
+  # IRSA: el rol da acceso al bucket sin claves estáticas.
+  serviceAccount:
+    create: true
+    name: langfuse
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/langfuse-s3 # CAMBIAR
+
+  ingress:
+    enabled: true
+    className: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+      alb.ingress.kubernetes.io/healthcheck-path: /api/public/ready
+      alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:123456789012:certificate/CAMBIAR
+    hosts:
+      - host: langfuse.example.com # CAMBIAR
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      enabled: false # la terminación TLS la hace el ALB con el certificado de ACM
+
+  # El chart no expone el auto-provisioning ni los flags de v4: van como env extra.
+  # Crear la organización, el proyecto y las claves de API al arrancar evita tener
+  # que entrar por la UI para que LiteLLM o tu app puedan escribir.
+  # Quítalo tras el primer despliegue si prefieres gestionarlo desde la UI.
+  additionalEnv:
+    - name: LANGFUSE_INIT_ORG_ID
+      value: platform
+    - name: LANGFUSE_INIT_ORG_NAME
+      value: Platform
+    - name: LANGFUSE_INIT_PROJECT_ID
+      value: prod
+    - name: LANGFUSE_INIT_PROJECT_NAME
+      value: LLM Gateway
+    - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: init-project-public-key
+    - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: init-project-secret-key
+    - name: LANGFUSE_INIT_USER_EMAIL
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: init-user-email
+    - name: LANGFUSE_INIT_USER_NAME
+      value: Platform Admin
+    - name: LANGFUSE_INIT_USER_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: init-user-password
+
+# --- Postgres: RDS ---
+# Ojo: la clave que llega a DATABASE_ARGS es `postgresql.args`, la de primer nivel.
+# `postgresql.auth.args` existe en values.yaml pero ninguna plantilla la usa.
+postgresql:
+  deploy: false
+  host: langfuse.abcdefghijkl.eu-west-1.rds.amazonaws.com # CAMBIAR
+  port: 5432
+  args: sslmode=require
+  auth:
+    username: langfuse
+    database: langfuse
+    existingSecret: langfuse-secrets
+    secretKeys:
+      userPasswordKey: postgres-password
+      adminPasswordKey: postgres-password
+  migration:
+    autoMigrate: true
+
+# --- Redis: ElastiCache ---
+# `username: null` omite el usuario de la cadena de conexión, que es lo que hace
+# falta en ElastiCache sin usuarios RBAC. Si usas RBAC, pon el nombre del usuario.
+# Langfuse EXIGE maxmemory-policy=noeviction: configúralo en el parameter group,
+# porque con redis.deploy=false el chart no lo comprueba ni lo aplica.
+# Si la caché tiene cifrado en tránsito, tls.enabled: true (usa rediss://).
+redis:
+  deploy: false
+  host: master.langfuse.abcdef.euw1.cache.amazonaws.com # CAMBIAR
+  port: 6379
+  tls:
+    enabled: true
+  auth:
+    username: null
+    existingSecret: langfuse-secrets
+    existingSecretPasswordKey: redis-password
+    database: 0
+
+# --- ClickHouse externo ---
+# Esta es la pieza que obliga a salir del chart por defecto: el ClickHouse que
+# empaqueta (Bitnami) NO es compatible con Langfuse v4, que exige >= 25.12.
+# AWS no ofrece ClickHouse gestionado. Dos caminos:
+#   1. ClickHouse Cloud (lo de abajo). El prefijo https:// en `host` es lo que
+#      hace que CLICKHOUSE_URL salga en https; la URL de migración se compone
+#      siempre como clickhouse://host:nativePort, de ahí el migration.ssl aparte.
+#   2. Operador oficial de ClickHouse en el propio cluster (requiere cert-manager):
+#      helm install clickhouse-operator oci://ghcr.io/clickhouse/clickhouse-operator-helm
+#      y entonces host: langfuse-clickhouse-headless con httpPort 8123 / nativePort 9000.
+# clusterEnabled: false para una instancia única. Ponlo a true solo si es un
+# cluster real con macros configuradas: las migraciones usan ON CLUSTER.
+clickhouse:
+  deploy: false
+  host: https://abcdefghij.eu-west-1.aws.clickhouse.cloud # CAMBIAR
+  httpPort: 8443
+  nativePort: 9440
+  database: default
+  clusterEnabled: false
+  auth:
+    username: default
+    existingSecret: langfuse-secrets
+    existingSecretKey: clickhouse-password
+  migration:
+    ssl: true
+    autoMigrate: true
+
+# --- S3 ---
+# Dejando accessKeyId y secretAccessKey vacíos, el chart no emite ninguna env var
+# LANGFUSE_S3_*_ACCESS_KEY_ID y el SDK de AWS cae a la cadena de credenciales,
+# que con IRSA resuelve al rol del ServiceAccount de arriba: cero claves estáticas.
+# No mezcles esto con LANGFUSE_S3_* en additionalEnv: el chart aborta el render.
+# forcePathStyle debe ser false en S3 real (solo hace falta con MinIO).
+s3:
+  deploy: false
+  storageProvider: s3
+  bucket: langfuse-prod-events # CAMBIAR
+  region: eu-west-1 # CAMBIAR
+  endpoint: https://s3.eu-west-1.amazonaws.com # CAMBIAR
+  forcePathStyle: false
+  eventUpload:
+    prefix: events/
+  mediaUpload:
+    enabled: true
+    prefix: media/
+  batchExport:
+    enabled: true
+    prefix: exports/

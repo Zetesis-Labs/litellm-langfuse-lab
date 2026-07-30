@@ -1,0 +1,58 @@
+model_list:
+  # Modelo sintético: no llama a ningún proveedor y no necesita API key.
+  # Lleva pricing declarado para que el gasto sea visible end-to-end sin gastar dinero.
+  - model_name: mock
+    litellm_params:
+      model: openai/mock
+      api_key: not-needed
+      mock_response: "Respuesta del modelo mock. El stack funciona: LiteLLM ha calculado el coste y lo ha enviado a Langfuse."
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Si /spend/logs devuelve cost 0.0 para un modelo, LiteLLM no conoce su pricing:
+  # descomenta los costes por token del modelo afectado (USD por token, no por millón).
+  #     input_cost_per_token: 0.000005   # claude-opus-5   -> $5 / 1M
+  #     output_cost_per_token: 0.000025  # claude-opus-5   -> $25 / 1M
+  #     input_cost_per_token: 0.000003   # claude-sonnet-5 -> $3 / 1M
+  #     output_cost_per_token: 0.000015  # claude-sonnet-5 -> $15 / 1M
+  #     input_cost_per_token: 0.000001   # claude-haiku-4-5 -> $1 / 1M
+  #     output_cost_per_token: 0.000005  # claude-haiku-4-5 -> $5 / 1M
+
+litellm_settings:
+  drop_params: true
+  num_retries: 2
+  default_key_generate_params:
+    max_budget: 5.0
+
+# Sin callback a Langfuse a propósito. Contra Langfuse v4 (modo events_only):
+#   - callback "langfuse": usa la API de ingesta del SDK v2, que v4 rechaza (400).
+#   - callback "langfuse_otel": ingesta bien, pero llega sin coste ni session/user
+#     y arrastra los spans internos del proxy.
+# Quien emite la traza es la FastAPI, con el SDK v4, propagando el coste que
+# LiteLLM calcula y devuelve en la cabecera x-litellm-response-cost.
+# LiteLLM sigue siendo la fuente de verdad del gasto: /spend/logs y budgets por key.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
