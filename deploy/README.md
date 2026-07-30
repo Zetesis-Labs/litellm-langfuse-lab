@@ -3,6 +3,11 @@
 Los mismos dos componentes del entorno local, con los charts oficiales, apuntando a
 dependencias gestionadas de AWS.
 
+Es el caso mínimo a propósito: solo `helm` y `kubectl`. Sin GitOps, sin operador de secretos y
+sin registro propio — las imágenes se tiran de los registros públicos de cada proyecto y los
+Secrets los crea un script. Si lo llevas a un cluster con ArgoCD y un gestor de secretos, estos
+values valen igual: cambia quién los aplica, no lo que contienen.
+
 ```
         ALB (interno)                    ALB (público, ACM)
              │                                   │
@@ -34,14 +39,14 @@ Nada de esto lo crean los charts:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-./deploy/scripts/gen-secrets.sh          # crea el namespace y los Secrets
+./deploy/scripts/gen-secrets.sh          # crea el namespace y los cuatro Secrets
 # edita deploy/values/*.yaml: todo lo marcado con CAMBIAR
 DRY_RUN=1 ./deploy/scripts/apply.sh      # renderiza sin aplicar
 ./deploy/scripts/apply.sh                # aplica
 ```
 
-`preflight.sh` corre antes y avisa de lo que falta (IngressClass, StorageClass, operadores,
-Secrets). Para GitOps, en `argocd/` hay un Application por componente en lugar del script.
+`apply.sh` ejecuta antes `preflight.sh`, que comprueba herramientas, conexión al cluster,
+IngressClass y que los Secrets existan.
 
 ## ClickHouse: la decisión importante
 
@@ -86,9 +91,14 @@ el salt key entra por `environmentSecrets` junto a las claves de los proveedores
 `masterkeySecretName` vacío, el chart genera un master key aleatorio en cada render, que bajo
 GitOps significa rotarlo en cada sincronización.
 
-**Las migraciones de LiteLLM ya vienen resueltas para ArgoCD.** El Job usa la misma imagen del
-proxy y se anota como `PreSync`; el Deployment recibe `DISABLE_SCHEMA_UPDATE=true` para que las
-réplicas no compitan migrando el esquema en cada rollout.
+**El Job de migración de LiteLLM viene configurado para ArgoCD, y aquí se invierte.** El chart lo
+anota como hook `PreSync` de ArgoCD y deja el hook de Helm apagado. Desplegando con `helm` a pelo,
+eso deja el Job como un recurso normal que se aplica en paralelo al Deployment: los pods arrancan
+contra un esquema sin migrar (llevan `DISABLE_SCHEMA_UPDATE=true` para no competir entre réplicas)
+y solo sobreviven a base de reinicios. Los values ponen `hooks.helm.enabled: true` y
+`hooks.argocd.enabled: false`, de modo que Helm lo ejecuta como `pre-install,pre-upgrade` y con
+`--wait` la migración acaba antes de rodar los pods. Si algún día lo pasas a ArgoCD, hay que
+invertirlo de nuevo.
 
 **El ALB no debe apuntar a `/health`.** Ese endpoint hace una llamada real a *cada* modelo
 configurado, y con modelos de pago eso cuesta dinero en cada comprobación. Usa
@@ -120,7 +130,8 @@ Ambos charts se renderizan correctamente con estos values (`helm template`), y s
 en el manifiesto resultante: imágenes `langfuse:4` y `langfuse-worker:4`, `litellm-database:v1.94.0`,
 cero referencias a Bitnami, `DATABASE_ARGS=sslmode=require`, `REDIS_CONNECTION_STRING` con
 `rediss://`, `CLICKHOUSE_CLUSTER_ENABLED=false`, ninguna variable de credenciales de S3, la
-anotación de IRSA en el ServiceAccount, y el Job de migración con los hooks de ArgoCD.
+anotación de IRSA en el ServiceAccount, y el Job de migración como hook `pre-install,pre-upgrade`
+de Helm.
 
 **No se ha desplegado contra un EKS real**: los endpoints de RDS, ElastiCache, ClickHouse, el
 bucket y los ARN son marcadores. Lo que está verificado es que los manifiestos son correctos y

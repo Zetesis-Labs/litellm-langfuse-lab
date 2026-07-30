@@ -86,41 +86,15 @@ langfuse:
     tls:
       enabled: false # la terminación TLS la hace el ALB con el certificado de ACM
 
-  # El chart no expone el auto-provisioning ni los flags de v4: van como env extra.
-  # Crear la organización, el proyecto y las claves de API al arrancar evita tener
-  # que entrar por la UI para que LiteLLM o tu app puedan escribir.
-  # Quítalo tras el primer despliegue si prefieres gestionarlo desde la UI.
-  additionalEnv:
-    - name: LANGFUSE_INIT_ORG_ID
-      value: platform
-    - name: LANGFUSE_INIT_ORG_NAME
-      value: Platform
-    - name: LANGFUSE_INIT_PROJECT_ID
-      value: prod
-    - name: LANGFUSE_INIT_PROJECT_NAME
-      value: LLM Gateway
-    - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-secrets
-          key: init-project-public-key
-    - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-secrets
-          key: init-project-secret-key
-    - name: LANGFUSE_INIT_USER_EMAIL
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-secrets
-          key: init-user-email
-    - name: LANGFUSE_INIT_USER_NAME
-      value: Platform Admin
-    - name: LANGFUSE_INIT_USER_PASSWORD
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-secrets
-          key: init-user-password
+  # El chart no expone el auto-provisioning: las LANGFUSE_INIT_* entran como env
+  # extra desde un Secret dedicado. Crear la organización, el proyecto y las
+  # claves de API al arrancar evita tener que pasar por la UI para que la
+  # aplicación pueda escribir trazas.
+  # El Secret lo crea deploy/scripts/gen-secrets.sh; en un cluster con External
+  # Secrets, sincronízalo desde el gestor de secretos (ver manifests/).
+  additionalEnvFrom:
+    - secretRef:
+        name: langfuse-init
 
 # --- Postgres: RDS ---
 # Ojo: la clave que llega a DATABASE_ARGS es `postgresql.args`, la de primer nivel.

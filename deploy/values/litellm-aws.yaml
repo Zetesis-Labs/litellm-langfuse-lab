@@ -46,18 +46,22 @@ redis:
   enabled: false
 
 # El Job de migración usa la misma imagen del proxy y corre `prisma_migration.py`.
-# Bajo ArgoCD se registra como hook PreSync (ya viene activado), así que migra
-# antes de que rueden los pods nuevos. El Deployment recibe
-# DISABLE_SCHEMA_UPDATE=true para que las réplicas no compitan migrando.
+# El chart lo anota por defecto como hook PreSync de ArgoCD y deja el hook de Helm
+# apagado. Desplegando con helm directo eso significa que el Job se aplicaría como
+# un recurso más, en paralelo al Deployment y sin orden garantizado: los pods
+# arrancarían contra un esquema sin migrar (llevan DISABLE_SCHEMA_UPDATE=true) y
+# sobrevivirían solo a base de reinicios. Por eso aquí se invierte: hook de Helm
+# sí, hook de ArgoCD no. Con `helm upgrade --wait` la migración termina antes de
+# que rueden los pods nuevos.
 migrationJob:
   enabled: true
   backoffLimit: 4
   ttlSecondsAfterFinished: 300
   hooks:
     argocd:
-      enabled: true
-    helm:
       enabled: false
+    helm:
+      enabled: true
 
 service:
   type: ClusterIP
