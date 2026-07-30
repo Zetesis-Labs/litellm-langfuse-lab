@@ -18,7 +18,7 @@ spec:
         releaseName: langfuse
         valueFiles:
           - $values/deploy/values/langfuse-aws.yaml
-    - repoURL: https://github.com/CAMBIAR/litellm-langfuse-lab.git # CAMBIAR
+    - repoURL: https://github.com/Zetesis-Labs/litellm-langfuse-lab.git
       targetRevision: main
       ref: values
   syncPolicy:
